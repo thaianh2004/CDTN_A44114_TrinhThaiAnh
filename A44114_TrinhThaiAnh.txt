@@ -1,0 +1,467 @@
+
+%% ================================================================
+%  MÔ PHỎNG VÀ ĐÁNH GIÁ HIỆU SUẤT MẠNG 5G 
+%  Đồ án tốt nghiệp — Trường Đại học Thăng Long
+%  Sinh viên: A44114 - Trịnh Thái Anh
+%  GVHD    : PGS.TS Hoàng Trọng Minh
+%  ----------------------------------------------------------------
+%  Mô hình   : Single-cell, gNodeB tại tâm
+%              6 vị trí UE đại diện theo khoảng cách
+%              (50, 100, 150, 200, 250, 300 m)
+%  Kênh      : MIMO 4×4 đơn giản hóa (MRC diversity gain)
+%              Rayleigh Fading (NLOS)
+%  Path Loss : UMa NLOS – 3GPP TR 38.901, Table 7.4.1-1
+%  Monte Carlo: 1000 lần lặp / khoảng cách
+%  KPIs      : Throughput, Latency, BER, Spectrum Efficiency, SNR
+%  Yêu cầu  : MATLAB R2020b trở lên
+%% ================================================================
+clear; clc; close all;
+
+fprintf('=====================================================\n');
+fprintf('  MO PHONG HIEU SUAT MANG 5G \n');
+fprintf('  Mo hinh UMa NLOS (3GPP TR 38.901)\n');
+fprintf('  MIMO 4x4 don gian hoa (MRC), Rayleigh Fading\n');
+fprintf('  Sinh vien: A44114 - Trinh Thai Anh\n');
+fprintf('=====================================================\n\n');
+
+%% ============================================================
+%  PHAN 1: THAM SO HE THONG
+%% ============================================================
+
+% --- Tan so va bang thong ---
+fc_GHz    = 3.5;          % Tan so trung tam (GHz) - Band n78, 3GPP TS 38.104
+B_Hz      = 100e6;        % Bang thong he thong: 100 MHz (3GPP TS 38.104, Table 5.3.5-1)
+
+% --- Tram goc gNodeB ---
+Ptx_dBm   = 30;           % Cong suat phat: 30 dBm (3GPP TS 38.104, Table 6.2.1-1)
+hBS       = 25;           % Chieu cao anten gNodeB (m) - 3GPP TR 38.901, Sec. 7.2
+N_tx      = 4;            % So anten phat (MIMO 4x4 don gian hoa)
+N_rx      = 4;            % So anten thu  (MIMO 4x4 don gian hoa)
+
+% --- Thiet bi nguoi dung UE ---
+hUT       = 1.5;          % Chieu cao anten UE (m) - 3GPP TR 38.901
+% Ghi chu: Moi khoang cach dai dien cho 1 vi tri UE.
+% Khong mo phong nhieu UE dong thoi trong cung mot cell.
+
+% --- Tham so nhieu ---
+N0_dBm_Hz = -174;         % Mat do cong suat nhieu nhiet (dBm/Hz), kT tai 290 K
+NF_dB     = 7;            % He so nhieu may thu UE (dB) - 3GPP TS 38.101-1
+
+% --- Noise Floor ---
+%   NoisePow [dBm] = N0 [dBm/Hz] + 10*log10(B [Hz]) + NF [dB]
+NoisePow_dBm = N0_dBm_Hz + 10*log10(B_Hz) + NF_dB;
+fprintf('>> Noise Floor = %.2f dBm\n', NoisePow_dBm);
+
+% --- Kich ban khoang cach ---
+distances_m = [50, 100, 150, 200, 250, 300];  % 6 vi tri UE dai dien (m)
+N_dist      = length(distances_m);
+
+% --- Monte Carlo ---
+N_MC = 1000;
+rng(42);   % Seed co dinh - ket qua co the tai lap (reproducible)
+
+%% ============================================================
+%  PHAN 2: HAM MO HINH KENH TRUYEN
+%% ============================================================
+
+% --- 2.1 Path Loss UMa NLOS (3GPP TR 38.901, Table 7.4.1-1) ---
+%   PL = 13.54 + 39.08*log10(d3D) + 20*log10(fc) - 0.6*(hUT-1.5)
+%
+%   QUAN TRONG: phai dung d3D = sqrt(d2D^2 + (hBS-hUT)^2), KHONG phai d2D.
+%   Dieu kien ap dung: 10 m <= d2D <= 5000 m, fc tinh bang GHz.
+%   Nguon: 3GPP TR 38.901 V17.0.0, Table 7.4.1-1, hang NLOS.
+pathloss_UMa = @(d2D) ...
+    13.54 + 39.08.*log10(sqrt(d2D.^2 + (hBS-hUT).^2)) ...
+    + 20.*log10(fc_GHz) - 0.6.*(hUT-1.5);
+
+% --- 2.2 Rayleigh Fading - MIMO 4x4 don gian hoa (MRC) ---
+%   Bien do kenh h_{i} ~ CN(0,1): phan thuc va phan ao doc lap,
+%   moi phan ~ N(0, 1/2), nen |h_i|^2 ~ Exp(1) (phan bo mu don vi).
+%
+%   Mo hinh MRC (Maximal Ratio Combining):
+%       gain = sum_{i=1}^{N_rx} |h_i|^2
+%       gain_dB = 10*log10(gain)
+%
+%   Y nghia vat ly:
+%       E[gain] = N_rx = 4  (linear)
+%       E[gain_dB] ~= 10*log10(4) ~= +6 dB
+%   => SNR mo phong trung binh cao hon truong hop 1 anten ~6 dB.
+%      Day la MRC diversity gain hop ly ve mat vat ly, nhat quan voi
+%      mo ta trong muc 3.2.1 cua do an (SNR_MRC = SNR_1ant + 10*log10(N_rx)).
+%      Mo hinh nay the hien diversity gain cua da anten thu (khong gian),
+%      KHONG mo phong spatial multiplexing hay beamforming chi tiet.
+%   Nguon: Goldsmith (2005), Wireless Communications, Chap. 7 - MRC diversity.
+rayleigh_gain_dB = @() ...
+    10*log10( sum( abs((1/sqrt(2)).*(randn(N_rx,1)+1j*randn(N_rx,1))).^2 ) );
+
+%% ============================================================
+%  PHAN 3: KHOI TAO BIEN KET QUA
+%% ============================================================
+SNR_mean_dB     = zeros(1, N_dist);
+throughput_mean = zeros(1, N_dist);
+throughput_std  = zeros(1, N_dist);
+SE_mean         = zeros(1, N_dist);
+BER_mean        = zeros(1, N_dist);
+latency_mean    = zeros(1, N_dist);
+PL_values       = zeros(1, N_dist);
+
+%% ============================================================
+%  PHAN 4: VONG LAP MONTE CARLO CHINH
+%% ============================================================
+fprintf('\n>> Bat dau Monte Carlo (%d lan / khoang cach)...\n\n', N_MC);
+
+for idx = 1:N_dist
+    d2D = distances_m(idx);
+
+    thr_mc = zeros(1, N_MC);
+    se_mc  = zeros(1, N_MC);
+    ber_mc = zeros(1, N_MC);
+    lat_mc = zeros(1, N_MC);
+    snr_mc = zeros(1, N_MC);
+
+    for mc = 1:N_MC
+
+        % ---- 4.1 Suy hao duong truyen (UMa NLOS) ----
+        PL_dB = pathloss_UMa(d2D);
+
+        % ---- 4.2 Fading Rayleigh (MIMO 4x4 MRC don gian hoa) ----
+        %   fading_dB bao gom MRC diversity gain (~+6 dB trung binh).
+        %   Bien dong ngau nhien giua cac lan lap phan anh bien do
+        %   Rayleigh thay doi theo thoi gian/vi tri (fast fading).
+        fading_dB = rayleigh_gain_dB();
+
+        % ---- 4.3 SNR tai may thu ----
+        %   SNR [dB] = Ptx - PL + Fading_gain - NoisePow
+        %   Fading_gain da bao gom ca MRC gain (xem ghi chu Phan 2.2).
+        SNR_dB  = Ptx_dBm - PL_dB + fading_dB - NoisePow_dBm;
+        SNR_lin = max(10^(SNR_dB/10), 1e-10);   % tranh log(0)
+        snr_mc(mc) = SNR_dB;
+
+        % ---- 4.4 Throughput (Shannon capacity) ----
+        %   C = B * log2(1 + SNR)  [Goldsmith, 2005, Chap. 4]
+        %   Cap tai 8 bps/Hz = gioi han ly thuyet cua 256-QAM
+        %   (3GPP TS 38.214, Sec. 5.1.3, MCS index 27 - cao nhat).
+        SE_inst    = min(log2(1 + SNR_lin), 8.0);   % bps/Hz
+        thr_mc(mc) = B_Hz * SE_inst / 1e6;          % Mbps
+        se_mc(mc)  = SE_inst;                        % bps/Hz
+
+        % ---- 4.5 BER - QPSK tren kenh Rayleigh ----
+        %   Cong thuc BER_QPSK_Rayleigh(gamma):
+        %       BER ~= 0.5 * (1 - sqrt(gamma / (1+gamma)))
+        %   Nguon: Proakis & Salehi (2007), Digital Communications,
+        %          5th ed., Eq. (8-49), tr. 276.
+        %
+        %   Ghi chu: BER duoc tinh theo SNR sau MRC (SNR_lin).
+        %   Ket qua mang tinh xap xi ly thuyet cho QPSK co dinh,
+        %   chua xet ma hoa kenh (LDPC/Turbo), HARQ hay AMC.
+        ber_mc(mc) = max(0.5*(1 - sqrt(SNR_lin/(1+SNR_lin))), 1e-10);
+
+        % ---- 4.6 Latency (do tre dau cuoi don gian hoa) ----
+        %   Latency = T_prop + T_proc + T_HARQ
+        %
+        %   T_prop: do tre lan truyen = d/c  (rat nho voi d <= 300 m)
+        %   T_proc: do tre xu ly khung OFDM co dinh = 100 us
+        %   T_HARQ: do tre truyen lai HARQ (phu thuoc BLER)
+        %
+        %   Mo hinh BLER xap xi:
+        %       BLER ~= BER * 50
+        %   He so 50 la uoc luong thuc nghiem cho block size ~1000 bit
+        %   voi dieu che QPSK. Day la xap xi don gian hoa, KHONG phai
+        %   cong thuc chuan 3GPP. Muc dich: the hien xu huong tang
+        %   HARQ rounds khi khoang cach tang (BER tang).
+        %
+        %   So vong HARQ: HARQ_rounds = min(1 + round(3*BLER), 4)
+        %   Toi da 4 rounds theo 3GPP TS 38.321, Sec. 5.4.2.1.
+        %
+        %   T_HARQ = HARQ_rounds * 500 us
+        %   500 us/round ~ 1 slot NR voi SCS = 30 kHz
+        %   Nguon: 3GPP TS 38.211, Table 4.3.2-1
+        %          (slot duration = 1/numerology = 0.5 ms tai mu=1).
+        Tprop_us    = (d2D / 3e8) * 1e6;             % us
+        Tproc_us    = 100;                             % us (co dinh, xap xi)
+        BLER_approx = min(ber_mc(mc) * 50, 0.99);
+        HARQ_rounds = min(1 + round(3*BLER_approx), 4);  % toi da 4 rounds
+        T_HARQ_us   = HARQ_rounds * 500;              % us (500 us = 1 slot, SCS 30kHz)
+        lat_mc(mc)  = (Tprop_us + Tproc_us + T_HARQ_us) / 1000;  % ms
+
+    end   % end Monte Carlo
+
+    % --- Luu trung binh va do lech chuan ---
+    SNR_mean_dB(idx)     = mean(snr_mc);
+    throughput_mean(idx) = mean(thr_mc);
+    throughput_std(idx)  = std(thr_mc);
+    SE_mean(idx)         = mean(se_mc);
+    BER_mean(idx)        = mean(ber_mc);
+    latency_mean(idx)    = mean(lat_mc);
+    PL_values(idx)       = pathloss_UMa(d2D);
+
+    fprintf('  d=%3dm | PL=%6.2fdB | SNR=%6.2fdB | Tput=%7.2fMbps | Lat=%5.3fms | BER=%.2e | SE=%5.3f bps/Hz\n', ...
+        d2D, PL_values(idx), SNR_mean_dB(idx), throughput_mean(idx), ...
+        latency_mean(idx), BER_mean(idx), SE_mean(idx));
+
+end
+
+%% ============================================================
+%  PHAN 5: IN BANG 3.3 — KET QUA MO PHONG
+%% ============================================================
+fprintf('\n%s\n', repmat('=',1,95));
+fprintf('   BANG 3.3 — KET QUA MO PHONG KPI THEO KHOANG CACH\n');
+fprintf('   (UMa NLOS | MIMO 4x4 MRC | Rayleigh Fading | fc=3.5GHz | BW=100MHz | N_MC=1000)\n');
+fprintf('%s\n', repmat('=',1,95));
+fprintf('%-8s | %-9s | %-10s | %-20s | %-12s | %-12s | %-14s\n', ...
+    'KC (m)', 'PL (dB)', 'SNR (dB)', 'Throughput (Mbps)', 'Latency (ms)', 'BER', 'SE (bps/Hz)');
+fprintf('%s\n', repmat('-',1,95));
+for idx = 1:N_dist
+    fprintf('%-8d | %-9.2f | %-10.2f | %-20.2f | %-12.3f | %-12.2e | %-14.3f\n', ...
+        distances_m(idx), PL_values(idx), SNR_mean_dB(idx), throughput_mean(idx), ...
+        latency_mean(idx), BER_mean(idx), SE_mean(idx));
+end
+fprintf('%s\n\n', repmat('=',1,95));
+
+%% ============================================================
+%  PHAN 6: DO THI TONG HOP 4 KPI (1 figure, 4 subplot)
+%% ============================================================
+fig_bg = [0.97 0.97 0.99];
+lw = 2.2;  ms = 9;
+
+fig_all = figure('Name','Tong_hop_4_KPI','Position',[50,50,1200,850],'Color',fig_bg);
+sgtitle({'{\bfKet qua mo phong hieu suat mang 5G NR}', ...
+    'UMa NLOS (3GPP TR 38.901) | MIMO 4x4 MRC | Rayleigh Fading | f_c=3.5 GHz | BW=100 MHz'}, ...
+    'FontSize',13);
+
+% (a) Throughput
+subplot(2,2,1); hold on;
+fill([distances_m,fliplr(distances_m)], ...
+     [throughput_mean+throughput_std, fliplr(throughput_mean-throughput_std)], ...
+     [0.6 0.8 1.0],'FaceAlpha',0.25,'EdgeColor','none','HandleVisibility','off');
+plot(distances_m, throughput_mean,'-o','Color',[0 0.45 0.74], ...
+    'LineWidth',lw,'MarkerSize',ms,'MarkerFaceColor',[0 0.45 0.74]);
+yline(100,'r--','LineWidth',1.5,'Label','IMT-2020 eMBB: 100 Mbps', ...
+    'LabelHorizontalAlignment','left','LabelVerticalAlignment','bottom');
+for i=1:N_dist
+    text(distances_m(i), throughput_mean(i)+max(throughput_mean)*0.045, ...
+        sprintf('%.0f',throughput_mean(i)), ...
+        'HorizontalAlignment','center','FontSize',8,'FontWeight','bold');
+end
+xlabel('Khoang cach (m)'); ylabel('Throughput (Mbps)');
+title('(a) Throughput','FontWeight','bold');
+grid on; grid minor; xlim([35 315]); xticks(distances_m); hold off;
+
+% (b) Latency
+subplot(2,2,2); hold on;
+plot(distances_m, latency_mean,'-s','Color',[0.85 0.33 0.10], ...
+    'LineWidth',lw,'MarkerSize',ms,'MarkerFaceColor',[0.85 0.33 0.10]);
+yline(1,'k--','LineWidth',1.5,'Label','URLLC: 1 ms', ...
+    'LabelHorizontalAlignment','left','LabelVerticalAlignment','top');
+for i=1:N_dist
+    text(distances_m(i), latency_mean(i)+max(latency_mean)*0.04, ...
+        sprintf('%.2f',latency_mean(i)), ...
+        'HorizontalAlignment','center','FontSize',8,'FontWeight','bold');
+end
+xlabel('Khoang cach (m)'); ylabel('Latency (ms)');
+title('(b) Latency','FontWeight','bold');
+grid on; grid minor; xlim([35 315]); xticks(distances_m); hold off;
+
+% (c) BER
+subplot(2,2,3); hold on;
+semilogy(distances_m, BER_mean,'-^','Color',[0.49 0.18 0.56], ...
+    'LineWidth',lw,'MarkerSize',ms,'MarkerFaceColor',[0.49 0.18 0.56]);
+yline(1e-5,'r--','LineWidth',1.5,'Label','URLLC: 10^{-5}', ...
+    'LabelHorizontalAlignment','left');
+for i=1:N_dist
+    text(distances_m(i), BER_mean(i)*2.5, ...
+        sprintf('%.1e',BER_mean(i)), ...
+        'HorizontalAlignment','center','FontSize',7.5,'FontWeight','bold');
+end
+xlabel('Khoang cach (m)'); ylabel('BER');
+title('(c) BER (QPSK, Rayleigh)','FontWeight','bold');
+grid on; grid minor; xlim([35 315]); xticks(distances_m); hold off;
+
+% (d) Spectrum Efficiency
+subplot(2,2,4); hold on;
+plot(distances_m, SE_mean,'-d','Color',[0.47 0.67 0.19], ...
+    'LineWidth',lw,'MarkerSize',ms,'MarkerFaceColor',[0.47 0.67 0.19]);
+yline(8,'r--','LineWidth',1.5,'Label','Gioi han 256-QAM: 8 bps/Hz', ...
+    'LabelHorizontalAlignment','left','LabelVerticalAlignment','bottom');
+for i=1:N_dist
+    text(distances_m(i), SE_mean(i)+max(SE_mean)*0.04, ...
+        sprintf('%.2f',SE_mean(i)), ...
+        'HorizontalAlignment','center','FontSize',9,'FontWeight','bold','Color',[0.2 0.45 0.05]);
+end
+xlabel('Khoang cach (m)'); ylabel('SE (bps/Hz)');
+title('(d) Hieu qua pho tan (SE)','FontWeight','bold');
+grid on; grid minor; xlim([35 315]); xticks(distances_m); hold off;
+
+%% ============================================================
+%  PHAN 7: DO THI RIENG TUNG KPI (Hinh 3.3 - 3.6)
+%% ============================================================
+
+% --- Hinh 3.3: Throughput ---
+fig1 = figure('Name','Hinh_3_3_Throughput','Position',[100,100,720,500],'Color',fig_bg);
+hold on;
+fill([distances_m,fliplr(distances_m)], ...
+     [throughput_mean+throughput_std, fliplr(throughput_mean-throughput_std)], ...
+     [0.6 0.8 1.0],'FaceAlpha',0.3,'EdgeColor','none','DisplayName','\pm1\sigma (fading)');
+plot(distances_m, throughput_mean,'-o','Color',[0 0.45 0.74],'LineWidth',lw, ...
+    'MarkerSize',ms,'MarkerFaceColor',[0 0.45 0.74],'DisplayName','Throughput mo phong');
+yline(100,'r--','LineWidth',1.8,'Label','IMT-2020 eMBB: 100 Mbps', ...
+    'LabelHorizontalAlignment','left','LabelVerticalAlignment','bottom', ...
+    'DisplayName','Yeu cau IMT-2020');
+for i=1:N_dist
+    text(distances_m(i), throughput_mean(i)+max(throughput_mean)*0.04, ...
+        sprintf('%.0f Mbps',throughput_mean(i)), ...
+        'HorizontalAlignment','center','FontSize',9,'FontWeight','bold','Color',[0 0.3 0.6]);
+end
+xlabel('Khoang cach UE - gNodeB (m)','FontSize',12);
+ylabel('Thong luong - Throughput (Mbps)','FontSize',12);
+title({'Hinh 3.3: Throughput theo khoang cach UE - gNodeB', ...
+    'UMa NLOS | MIMO 4x4 MRC | Rayleigh Fading | f_c=3.5 GHz | BW=100 MHz'}, ...
+    'FontSize',11,'FontWeight','bold');
+legend('Location','northeast','FontSize',10);
+grid on; grid minor; xlim([35 315]); xticks(distances_m);
+set(gca,'FontSize',10); hold off;
+
+% --- Hinh 3.4: Latency ---
+fig2 = figure('Name','Hinh_3_4_Latency','Position',[130,120,720,500],'Color',fig_bg);
+hold on;
+plot(distances_m, latency_mean,'-s','Color',[0.85 0.33 0.10],'LineWidth',lw, ...
+    'MarkerSize',ms,'MarkerFaceColor',[0.85 0.33 0.10],'DisplayName','Latency mo phong');
+yline(1,'k--','LineWidth',1.8,'Label','URLLC: 1 ms', ...
+    'LabelHorizontalAlignment','left','LabelVerticalAlignment','top', ...
+    'DisplayName','Yeu cau URLLC');
+for i=1:N_dist
+    text(distances_m(i), latency_mean(i)+max(latency_mean)*0.04, ...
+        sprintf('%.2f ms',latency_mean(i)), ...
+        'HorizontalAlignment','center','FontSize',9,'FontWeight','bold','Color',[0.6 0.1 0]);
+end
+xlabel('Khoang cach UE - gNodeB (m)','FontSize',12);
+ylabel('Do tre - Latency (ms)','FontSize',12);
+title({'Hinh 3.4: Latency theo khoang cach UE - gNodeB', ...
+    'Latency = T_{prop} + T_{proc} + T_{HARQ} (mo hinh don gian hoa)'}, ...
+    'FontSize',11,'FontWeight','bold');
+legend('Location','northwest','FontSize',10);
+grid on; grid minor; xlim([35 315]); xticks(distances_m);
+set(gca,'FontSize',10); hold off;
+
+% --- Hinh 3.5: BER ---
+fig3 = figure('Name','Hinh_3_5_BER','Position',[160,140,720,500],'Color',fig_bg);
+hold on;
+semilogy(distances_m, BER_mean,'-^','Color',[0.49 0.18 0.56],'LineWidth',lw, ...
+    'MarkerSize',ms,'MarkerFaceColor',[0.49 0.18 0.56],'DisplayName','BER mo phong');
+yline(1e-5,'r--','LineWidth',1.8,'Label','URLLC: BER < 10^{-5}', ...
+    'LabelHorizontalAlignment','left','DisplayName','Yeu cau URLLC');
+for i=1:N_dist
+    text(distances_m(i), BER_mean(i)*2.5, ...
+        sprintf('%.1e',BER_mean(i)), ...
+        'HorizontalAlignment','center','FontSize',8,'FontWeight','bold','Color',[0.3 0 0.4]);
+end
+xlabel('Khoang cach UE - gNodeB (m)','FontSize',12);
+ylabel('Ty le loi bit - BER','FontSize',12);
+title({'Hinh 3.5: BER theo khoang cach UE - gNodeB', ...
+    'QPSK | Rayleigh Fading | xap xi ly thuyet (Proakis & Salehi, 2007)'}, ...
+    'FontSize',11,'FontWeight','bold');
+legend('Location','northwest','FontSize',10);
+grid on; grid minor; xlim([35 315]); xticks(distances_m);
+set(gca,'FontSize',10); hold off;
+
+% --- Hinh 3.6: Spectrum Efficiency ---
+fig4 = figure('Name','Hinh_3_6_SE','Position',[190,160,720,500],'Color',fig_bg);
+hold on;
+plot(distances_m, SE_mean,'-d','Color',[0.47 0.67 0.19],'LineWidth',lw, ...
+    'MarkerSize',ms,'MarkerFaceColor',[0.47 0.67 0.19],'DisplayName','SE mo phong');
+yline(8,'r--','LineWidth',1.8,'Label','Gioi han 256-QAM: 8 bps/Hz', ...
+    'LabelHorizontalAlignment','left','LabelVerticalAlignment','bottom', ...
+    'DisplayName','Gioi han 256-QAM');
+for i=1:N_dist
+    text(distances_m(i), SE_mean(i)+max(SE_mean)*0.04, ...
+        sprintf('%.2f',SE_mean(i)), ...
+        'HorizontalAlignment','center','FontSize',9,'FontWeight','bold','Color',[0.2 0.45 0.05]);
+end
+xlabel('Khoang cach UE - gNodeB (m)','FontSize',12);
+ylabel('Hieu qua pho tan - SE (bps/Hz)','FontSize',12);
+title({'Hinh 3.6: Hieu qua pho tan theo khoang cach UE - gNodeB', ...
+    '\eta = log_2(1+SNR) | Shannon (1948); Goldsmith (2005), Chap. 4'}, ...
+    'FontSize',11,'FontWeight','bold');
+legend('Location','northeast','FontSize',10);
+grid on; grid minor; xlim([35 315]); xticks(distances_m);
+set(gca,'FontSize',10); hold off;
+
+%% ============================================================
+%  PHAN 8: MO HINH HE THONG DON CELL (Hinh 3.1 / 3.2)
+%% ============================================================
+fig5 = figure('Name','Hinh_3_1_Don_Cell','Position',[220,80,680,680],'Color',fig_bg);
+hold on;
+theta = linspace(0,2*pi,360);
+fill(320*cos(theta), 320*sin(theta),[0.93 0.95 1.0], ...
+    'EdgeColor',[0.4 0.4 0.5],'LineWidth',1.5,'DisplayName','Vung phu song cell');
+
+colors6 = [0.00 0.45 0.74; 0.85 0.33 0.10; 0.93 0.69 0.13;
+           0.49 0.18 0.56; 0.47 0.67 0.19; 0.30 0.75 0.93];
+angles6  = [pi/12, pi/12+pi/5, pi/12+2*pi/5, ...
+            pi/12+3*pi/5, pi/12+4*pi/5, pi/12+pi];
+
+for i = 1:N_dist
+    d   = distances_m(i);
+    col = colors6(i,:);
+    ang = angles6(i);
+    plot(d*cos(theta), d*sin(theta),'--','Color',[col 0.4],'LineWidth',0.8,'HandleVisibility','off');
+    ux = d*cos(ang);  uy = d*sin(ang);
+    plot([0 ux],[0 uy],'-','Color',[col 0.6],'LineWidth',1.2,'HandleVisibility','off');
+    plot(ux,uy,'o','MarkerSize',13,'MarkerFaceColor',col,'MarkerEdgeColor','k', ...
+        'LineWidth',1.2,'DisplayName',sprintf('UE tai %dm | PL~%.0fdB', d, PL_values(i)));
+    text(ux+18,uy+10,sprintf('%dm',d),'FontSize',10,'FontWeight','bold','Color',col*0.75);
+end
+
+plot(0,0,'k^','MarkerSize',16,'MarkerFaceColor',[0.15 0.15 0.15], ...
+    'LineWidth',1.5,'DisplayName','gNodeB (tam cell)');
+text(18,18,'gNodeB','FontSize',11,'FontWeight','bold');
+
+note = sprintf('Tham so:\n  f_c = 3.5 GHz\n  BW  = 100 MHz\n  P_{tx} = 30 dBm\n  MIMO 4x4 MRC\n  UMa NLOS');
+text(-315,295,note,'FontSize',9,'BackgroundColor',[1 1 1 0.85], ...
+    'EdgeColor',[0.6 0.6 0.6],'Margin',5,'VerticalAlignment','top');
+
+axis equal; grid on; grid minor;
+xlabel('x (m)','FontSize',12); ylabel('y (m)','FontSize',12);
+title({'Hinh 3.1/3.2: Mo hinh he thong don cell', ...
+    'gNodeB tai tam — 6 vi tri UE dai dien theo khoang cach'}, ...
+    'FontSize',12,'FontWeight','bold');
+legend('Location','southoutside','NumColumns',2,'FontSize',9);
+xlim([-345 345]); ylim([-345 345]); hold off;
+
+%% ============================================================
+%  PHAN 9: PATH LOSS VA SNR (Hinh bo sung)
+%% ============================================================
+fig6 = figure('Name','PathLoss_SNR','Position',[250,100,900,440],'Color',fig_bg);
+d_cont   = 10:5:350;
+PL_cont  = arrayfun(@(d) pathloss_UMa(d), d_cont);
+SNR_1ant = Ptx_dBm - PL_cont - NoisePow_dBm;   % SNR khong co fading, 1 anten
+
+subplot(1,2,1); hold on;
+plot(d_cont, PL_cont,'b-','LineWidth',2,'DisplayName','UMa NLOS Path Loss');
+scatter(distances_m, PL_values, 80,'r','filled','DisplayName','6 diem mo phong');
+for i = 1:N_dist
+    text(distances_m(i)+5, PL_values(i)+0.5, ...
+        sprintf('%.2fdB',PL_values(i)),'FontSize',8,'Color','r');
+end
+xlabel('Khoang cach (m)','FontSize',11);
+ylabel('Path Loss (dB)','FontSize',11);
+title('Path Loss — UMa NLOS (3GPP TR 38.901)','FontWeight','bold');
+legend('FontSize',9); grid on; xlim([0 360]); hold off;
+
+subplot(1,2,2); hold on;
+plot(d_cont, SNR_1ant,'r-','LineWidth',2,'DisplayName','SNR ly thuyet (1 anten, khong fading)');
+scatter(distances_m, SNR_mean_dB, 80,'b','filled','DisplayName','SNR trung binh mo phong (co fading + MRC)');
+yline(0,'k--','LineWidth',1.2,'Label','SNR = 0 dB','LabelHorizontalAlignment','left');
+for i = 1:N_dist
+    text(distances_m(i)+4, SNR_mean_dB(i)+0.8, ...
+        sprintf('%.2fdB',SNR_mean_dB(i)),'FontSize',8,'Color','b');
+end
+xlabel('Khoang cach (m)','FontSize',11);
+ylabel('SNR (dB)','FontSize',11);
+title('SNR theo khoang cach — f_c = 3.5 GHz','FontWeight','bold');
+legend('FontSize',9,'Location','northeast'); grid on; xlim([0 360]); hold off;
+sgtitle('Dac tinh kenh truyen UMa NLOS — 3GPP TR 38.901','FontSize',12,'FontWeight','bold');
+
+
+fprintf('\n>> Hoan tat mo phong.\n');
+fprintf('=== KET THUC ===\n');
